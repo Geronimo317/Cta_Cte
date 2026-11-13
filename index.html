@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conciliación Cta Cte</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#f6f7f9;--card:#fff;--ink:#1c2430;--muted:#64707f;--line:#e2e6eb;
+  --accent:#2f6f4f;--accent-soft:#e6f2ec;--warn:#a85d00;--warn-soft:#fff3e0;
+  --bad:#b3261e;--bad-soft:#fdecea;--info:#285a9b;--info-soft:#e8f0fb;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12161b;--card:#1b2128;--ink:#e6eaef;--muted:#9aa5b1;--line:#2c343d;
+  --accent:#6cc497;--accent-soft:#1d3329;--warn:#f0a948;--warn-soft:#352812;
+  --bad:#f28b82;--bad-soft:#3a1f1d;--info:#8ab4f8;--info-soft:#1c2a3d;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:20px 24px 8px;max-width:1200px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:17px;margin:0 0 12px}
+h3{font-size:15px;margin:18px 0 8px}
+main{max-width:1200px;margin:0 auto;padding:0 24px 48px}
+.muted{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;cursor:pointer}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.kpi .v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--card)}
+td.n,th.n{text-align:right;white-space:nowrap}
+tr.click{cursor:pointer}tr.click:hover td{background:var(--accent-soft)}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;white-space:nowrap}
+.t-bad{background:var(--bad-soft);color:var(--bad)}
+.t-warn{background:var(--warn-soft);color:var(--warn)}
+.t-ok{background:var(--accent-soft);color:var(--accent)}
+.t-info{background:var(--info-soft);color:var(--info)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:12px;flex-wrap:wrap}
+.tab{padding:8px 12px;border:0;background:none;color:var(--muted);cursor:pointer;font:inherit;border-bottom:2px solid transparent}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+button.btn{font:inherit;padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+input[type=date]{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
+.scroll{overflow-x:auto}
+.small{font-size:12px}
+.hidden{display:none}
+details summary{cursor:pointer;color:var(--muted)}
+@media (max-width:640px){header,main{padding-left:16px;padding-right:16px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Conciliación de cuentas corrientes</h1>
+  <div class="muted">Subí los exports de Finnegans (uno o varios clientes). Todo se procesa en este navegador: los datos no se envían a ningún servidor.</div>
+</header>
+<main>
+  <div class="card">
+    <div id="drop" class="drop">
+      <strong>Arrastrá los Excel acá</strong> o hacé clic para elegirlos
+      <div class="muted small">Export de cuenta corriente (.xlsx). Podés subir varios a la vez.</div>
+      <input id="file" type="file" accept=".xlsx,.xls" multiple class="hidden">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label>Fecha de corte <input id="corte" type="date"></label>
+      <span class="muted small">Se usa para calcular días de atraso.</span>
+      <span id="loaded" class="muted small"></span>
+    </div>
+  </div>
+
+  <div id="out"></div>
+</main>
+
+<script>
+"use strict";
+// ---------- utilidades ----------
+const fmt = n => (n<0?'-':'') + '$ ' + Math.abs(n).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtU = n => (n<0?'-':'') + 'US$ ' + Math.abs(n).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fd = d => d ? d.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
+const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => typeof v==='number' ? v : (v==null||v==='' ? 0 : Number(String(v).replace(/\./g,'').replace(',','.'))||0);
+const r2 = x => Math.round(x*100)/100;
+const DAY = 86400000;
+const days = (a,b) => Math.round((a-b)/DAY);
+const TOL = 1; // tolerancia en pesos para considerar montos iguales
+
+function toDate(v){
+  if(v instanceof Date) return new Date(v.getFullYear(),v.getMonth(),v.getDate());
+  if(typeof v==='number'){ const d=XLSX.SSF.parse_date_code(v); return new Date(d.y,d.m-1,d.d); }
+  if(typeof v==='string' && v.trim()){
+    const m=v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(m) return new Date(+m[3],+m[2]-1,+m[1]);
+    const d=new Date(v); if(!isNaN(d)) return new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  }
+  return null;
+}
+
+// ---------- lectura del export ----------
+const COLS = {
+  fecha:['Fecha'], fechaComp:['Fecha comprobante'], vto:['Fecha vencimiento'],
+  tipo:['Tipo de Documento'], org:['Organizacion Transaccion','Proveedor','Cliente','Organizacion'],
+  cuenta:['Codigo Cuenta','Cuenta'], doc:['Documento','IDENTIFICACIONEXTERNA'], desc:['Descripción','Descripcion'],
+  moneda:['Moneda'], cotiz:['Cotizacion'],
+  debe:['Debe'], haber:['Haber'], saldo:['Saldo'], debeU:['Debe Sec'], haberU:['Haber Sec'], saldoU:['Saldo Sec'],
+  transId:['TransacciónID','TransaccionID'],
+};
+function pick(row,key){ for(const c of COLS[key]) if(row[c]!==undefined && row[c]!==null && row[c]!=='' ) return row[c]; return null; }
+
+function parseWorkbook(wb, fileName){
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws,{defval:null,raw:true});
+  if(!rows.length || !('Documento' in rows[0]) || !('Debe' in rows[0]))
+    throw new Error(`"${fileName}" no parece un export de cuenta corriente (faltan columnas Documento/Debe/Haber).`);
+  const out=[];
+  let orgFallback = null;
+  for(const r of rows){
+    const doc = String(pick(r,'doc')||'').trim();
+    const org = String(pick(r,'org')||'').trim() || orgFallback || fileName;
+    orgFallback = org;
+    out.push({
+      file:fileName, org, doc,
+      inicial: /^saldo inicial$/i.test(doc),
+      fecha: toDate(pick(r,'fecha')), fechaComp: toDate(pick(r,'fechaComp')), vto: toDate(pick(r,'vto')),
+      tipo: String(pick(r,'tipo')||'').trim(), cuenta: String(r['Codigo Cuenta']||r['Cuenta']||'').trim(),
+      desc: String(pick(r,'desc')||'').trim(), moneda: String(pick(r,'moneda')||'').trim(),
+      debe:num(pick(r,'debe')), haber:num(pick(r,'haber')), saldo:num(pick(r,'saldo')),
+      debeU:num(pick(r,'debeU')), haberU:num(pick(r,'haberU')), saldoU:num(pick(r,'saldoU')),
+    });
+  }
+  return out;
+}
+
+// ---------- armado de documentos ----------
+function buildDocs(lines){
+  // agrupa líneas del mismo documento (ej. una cobranza en varias líneas)
+  const map=new Map();
+  for(const l of lines){
+    if(l.inicial){
+      const imp=l.saldo, impU=l.saldoU;
+      map.set('__inicial',{key:'__inicial',doc:'Saldo inicial',tipo:'Saldo inicial',cuenta:'',fecha:l.fecha,vto:l.fecha,
+        desc:'',moneda:'PESOS',debe:Math.max(imp,0),haber:Math.max(-imp,0),debeU:Math.max(impU,0),haberU:Math.max(-impU,0),lines:1,inicial:true});
+      continue;
+    }
+    const k=l.cuenta+'|'+l.doc;
+    let d=map.get(k);
+    if(!d){ d={key:k,doc:l.doc,tipo:l.tipo,cuenta:l.cuenta,fecha:l.fecha,fechaComp:l.fechaComp,vto:l.vto||l.fecha,desc:l.desc,moneda:l.moneda,debe:0,haber:0,debeU:0,haberU:0,lines:0}; map.set(k,d); }
+    d.debe+=l.debe; d.haber+=l.haber; d.debeU+=l.debeU; d.haberU+=l.haberU; d.lines++;
+    if(l.desc && !d.desc) d.desc=l.desc;
+  }
+  const docs=[...map.values()];
+  for(const d of docs){ d.imp=r2(d.debe-d.haber); d.impU=r2(d.debeU-d.haberU); }
+  // anulaciones: "Anulacion: - LiqVenGraSec - 237"
+  const byDoc=new Map(docs.map(d=>[d.doc.replace(/\s+/g,' ').toLowerCase(),d]));
+  for(const d of docs){
+    const m=d.desc.match(/anulaci[oó]n:?\s*-?\s*(.+)$/i);
+    if(m){ const t=byDoc.get(m[1].replace(/\s+/g,' ').trim().toLowerCase());
+      if(t && Math.abs(t.imp+d.imp)<=TOL){ t.anulado=d.doc; d.anulado=t.doc; } }
+  }
+  docs.sort((a,b)=>(a.inicial?-1:b.inicial?1:0)||(a.fecha-b.fecha)||(a.imp<b.imp?1:-1));
+  return docs;
+}
+
+// ---------- conciliación ----------
+// Débitos (imp>0): lo que el cliente nos debe (liquidaciones, ND, NC de compra, saldo inicial deudor).
+// Créditos (imp<0): cobranzas y compensaciones (facturas de compra al mismo cliente, NC de venta, etc.).
+// Paso 1: busca combinaciones de hasta 4 créditos cercanos en fecha que cancelen exacto un débito.
+// Paso 2: el resto se aplica por antigüedad (FIFO), como hace la mayoría de los sistemas.
+function conciliar(docs){
+  const act=docs.filter(d=>!d.anulado && Math.abs(d.imp)>0.005);
+  const deb=act.filter(d=>d.imp>0), cre=act.filter(d=>d.imp<0);
+  for(const d of act){ d.pend=Math.abs(d.imp); d.apps=[]; }
+  const apply=(D,C,m,how)=>{ D.pend=r2(D.pend-m); C.pend=r2(C.pend-m); D.apps.push({doc:C,m,how}); C.apps.push({doc:D,m,how}); };
+
+  // Paso 1: exactos
+  for(const D of deb){
+    if(D.inicial) continue;
+    const cand=cre.filter(C=>C.pend===Math.abs(C.imp) && C.pend<=D.pend+TOL &&
+      days(C.fecha,D.fecha)>=-30 && days(C.fecha,D.fecha)<=90)
+      .sort((a,b)=>Math.abs(days(a.fecha,D.fecha))-Math.abs(days(b.fecha,D.fecha))).slice(0,22);
+    const combo=findCombo(cand,D.pend,4);
+    if(combo) for(const C of combo) apply(D,C,C.pend,'exacto');
+  }
+  // Paso 2: FIFO
+  const pd=deb.filter(d=>d.pend>TOL).sort((a,b)=>(a.inicial?-1:b.inicial?1:0)||(a.fecha-b.fecha));
+  const pc=cre.filter(c=>c.pend>TOL).sort((a,b)=>a.fecha-b.fecha);
+  let i=0;
+  for(const C of pc){
+    while(C.pend>TOL && i<pd.length){
+      const D=pd[i]; const m=r2(Math.min(D.pend,C.pend)); apply(D,C,m,'por antigüedad');
+      if(D.pend<=TOL) i++;
+    }
+  }
+  for(const d of act){ if(d.pend<=TOL) d.pend=0; }
+  return {deb,cre};
+}
+function findCombo(c,target,maxK){
+  const n=c.length; const v=c.map(x=>x.pend);
+  for(let k=1;k<=maxK;k++){
+    const idx=[];
+    const rec=(start,sum)=>{
+      if(idx.length===k) return Math.abs(sum-target)<=TOL;
+      for(let j=start;j<n;j++){ if(sum+v[j]>target+TOL) continue; idx.push(j); if(rec(j+1,sum+v[j])) return true; idx.pop(); }
+      return false;
+    };
+    if(rec(0,0)) return idx.map(j=>c[j]);
+  }
+  return null;
+}
+
+// ---------- modelo por cliente ----------
+let STATE={clientes:new Map()};
+function analizar(org,lines,corte){
+  const docs=buildDocs(lines);
+  const {deb,cre}=conciliar(docs);
+  const last=lines[lines.length-1];
+  const saldoCalc=r2(docs.filter(d=>!d.anulado||true).reduce((s,d)=>s+d.imp,0));
+  const saldoUCalc=r2(docs.reduce((s,d)=>s+d.impU,0));
+  const impagos=deb.filter(d=>d.pend>0).map(d=>({...d,atraso:d.vto?days(corte,d.vto):0}));
+  const sinAplicar=cre.filter(c=>c.pend>0);
+  const pendDeb=r2(impagos.reduce((s,d)=>s+d.pend,0)), pendCre=r2(sinAplicar.reduce((s,d)=>s+d.pend,0));
+  return {org,docs,deb,cre,impagos,sinAplicar,pendDeb,pendCre,
+    saldoExport:last.saldo,saldoUExport:last.saldoU,saldoCalc,saldoUCalc,
+    desde:lines.find(l=>l.fecha)?.fecha, hasta:lines.reduce((m,l)=>l.fecha&&l.fecha>m?l.fecha:m,new Date(0)),
+    vencidos:impagos.filter(d=>d.atraso>0), files:[...new Set(lines.map(l=>l.file))]};
+}
+
+// ---------- UI ----------
+const $=s=>document.querySelector(s);
+const corteEl=$('#corte');
+corteEl.valueAsDate=new Date(new Date().toDateString()+' 12:00');
+const getCorte=()=>{ const v=corteEl.value; if(!v) return new Date(new Date().toDateString()); const [y,m,d]=v.split('-').map(Number); return new Date(y,m-1,d); };
+let RAW=new Map(); // org -> lines
+let view={client:null,tab:'impagos'};
+
+const drop=$('#drop'), fileEl=$('#file');
+drop.onclick=()=>fileEl.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};
+drop.ondragleave=()=>drop.classList.remove('over');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');handleFiles(e.dataTransfer.files)};
+fileEl.onchange=()=>handleFiles(fileEl.files);
+corteEl.onchange=()=>recompute();
+
+async function handleFiles(files){
+  const errs=[];
+  for(const f of files){
+    try{
+      const buf=await f.arrayBuffer();
+      const wb=XLSX.read(buf,{type:'array',cellDates:true});
+      const lines=parseWorkbook(wb,f.name);
+      const byOrg=new Map();
+      for(const l of lines){ if(!byOrg.has(l.org)) byOrg.set(l.org,[]); byOrg.get(l.org).push(l); }
+      for(const [org,ls] of byOrg) RAW.set(org,ls); // reemplaza si el cliente ya estaba cargado
+    }catch(e){ errs.push(e.message); }
+  }
+  fileEl.value='';
+  recompute(errs);
+}
+function recompute(errs=[]){
+  const corte=getCorte();
+  STATE.clientes=new Map([...RAW].map(([org,ls])=>[org,analizar(org,ls,corte)]));
+  $('#loaded').textContent=STATE.clientes.size?`${STATE.clientes.size} cliente(s) cargado(s)`:'';
+  render(errs);
+}
+
+function render(errs){
+  const out=$('#out'); const C=[...STATE.clientes.values()];
+  let h='';
+  if(errs.length) h+=`<div class="card" style="border-color:var(--bad)"><strong>No se pudo leer:</strong><ul>${errs.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`;
+  if(!C.length){ out.innerHTML=h; return; }
+  const tot=(f)=>C.reduce((s,c)=>s+f(c),0);
+  const nVenc=tot(c=>c.vencidos.length), mVenc=tot(c=>c.vencidos.reduce((s,d)=>s+d.pend,0));
+  h+=`<div class="kpis">
+    <div class="kpi"><div class="l">Saldo total a cobrar</div><div class="v">${fmt(tot(c=>c.saldoCalc))}</div><div class="muted small">${fmtU(tot(c=>c.saldoUCalc))}</div></div>
+    <div class="kpi"><div class="l">Comprobantes vencidos impagos</div><div class="v" style="color:var(--bad)">${nVenc}</div><div class="muted small">${fmt(mVenc)}</div></div>
+    <div class="kpi"><div class="l">Cobranzas sin comprobante</div><div class="v" style="color:var(--warn)">${tot(c=>c.sinAplicar.length)}</div><div class="muted small">${fmt(tot(c=>c.pendCre))}</div></div>
+    <div class="kpi"><div class="l">Clientes</div><div class="v">${C.length}</div><div class="muted small">corte ${fd(getCorte())}</div></div>
+  </div>`;
+
+  // tabla de clientes
+  h+=`<div class="card"><h2>Clientes</h2><div class="scroll"><table><thead><tr>
+    <th>Cliente</th><th class="n">Saldo $</th><th class="n">Saldo US$</th><th class="n">Impagos</th><th class="n">Vencidos</th><th class="n">Mayor atraso</th><th class="n">Cobranzas sin aplicar</th><th>Control</th></tr></thead><tbody>`;
+  for(const c of C.sort((a,b)=>b.saldoCalc-a.saldoCalc)){
+    const maxA=Math.max(0,...c.vencidos.map(d=>d.atraso));
+    const ok=Math.abs(c.saldoCalc-c.saldoExport)<=TOL;
+    h+=`<tr class="click" data-org="${esc(c.org)}"><td><strong>${esc(c.org)}</strong><div class="muted small">${fd(c.desde)} al ${fd(c.hasta)}</div></td>
+      <td class="n">${fmt(c.saldoCalc)}</td><td class="n">${fmtU(c.saldoUCalc)}</td>
+      <td class="n">${c.impagos.length} · ${fmt(c.pendDeb)}</td>
+      <td class="n">${c.vencidos.length?`<span class="tag t-bad">${c.vencidos.length}</span>`:'<span class="tag t-ok">0</span>'}</td>
+      <td class="n">${maxA?maxA+' días':'—'}</td>
+      <td class="n">${c.sinAplicar.length?`<span class="tag t-warn">${c.sinAplicar.length} · ${fmt(c.pendCre)}</span>`:'—'}</td>
+      <td>${ok?'<span class="tag t-ok">cuadra con Finnegans</span>':`<span class="tag t-bad" title="Saldo export ${fmt(c.saldoExport)}">no cuadra</span>`}</td></tr>`;
+  }
+  h+=`</tbody></table></div></div>`;
+
+  // detalle
+  const sel=STATE.clientes.get(view.client)||C[0]; view.client=sel.org;
+  h+=renderCliente(sel);
+  out.innerHTML=h;
+  out.querySelectorAll('tr[data-org]').forEach(tr=>tr.onclick=()=>{view.client=tr.dataset.org;render([]);document.getElementById('detalle').scrollIntoView({behavior:'smooth'})});
+  out.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{view.tab=b.dataset.tab;render([])});
+}
+
+function appsTxt(d){
+  if(!d.apps?.length) return '<span class="muted">—</span>';
+  return d.apps.map(a=>`${esc(a.doc.doc)} <span class="muted">${fmt(a.m)}</span>${a.how==='exacto'?' <span class="tag t-ok">exacto</span>':' <span class="tag t-info">estimado</span>'}`).join('<br>');
+}
+function renderCliente(c){
+  const tabs=[['impagos',`Comprobantes impagos (${c.impagos.length})`],['sinaplicar',`Cobranzas sin comprobante (${c.sinAplicar.length})`],['movs',`Todos los movimientos (${c.docs.length})`]];
+  let h=`<div class="card" id="detalle"><h2>${esc(c.org)}</h2>
+   <div class="muted small">Saldo según export: ${fmt(c.saldoExport)} · calculado: ${fmt(c.saldoCalc)} = impagos ${fmt(c.pendDeb)} − cobranzas sin aplicar ${fmt(c.pendCre)}</div>
+   <div class="tabs" style="margin-top:12px">${tabs.map(([k,l])=>`<button class="tab ${view.tab===k?'on':''}" data-tab="${k}">${l}</button>`).join('')}</div><div class="scroll">`;
+  if(view.tab==='impagos'){
+    const L=[...c.impagos].sort((a,b)=>b.atraso-a.atraso);
+    h+= L.length? `<table><thead><tr><th>Comprobante</th><th>Tipo</th><th>Fecha</th><th>Vencimiento</th><th class="n">Atraso</th><th class="n">Importe</th><th class="n">Pendiente</th><th>Cobrado con</th></tr></thead><tbody>`+
+      L.map(d=>`<tr><td><strong>${esc(d.doc)}</strong>${d.desc?`<div class="muted small">${esc(d.desc)}</div>`:''}</td><td>${esc(d.tipo)}</td><td>${fd(d.fecha)}</td><td>${fd(d.vto)}</td>
+      <td class="n">${d.atraso>0?`<span class="tag ${d.atraso>30?'t-bad':'t-warn'}">${d.atraso} días</span>`:'<span class="tag t-ok">a vencer</span>'}</td>
+      <td class="n">${fmt(d.imp)}</td><td class="n"><strong>${fmt(d.pend)}</strong>${d.pend<d.imp-TOL?'<div class="muted small">pago parcial</div>':''}</td><td class="small">${appsTxt(d)}</td></tr>`).join('')+`</tbody></table>`
+      : '<p>No hay comprobantes impagos. 🎉</p>';
+  } else if(view.tab==='sinaplicar'){
+    h+= c.sinAplicar.length? `<table><thead><tr><th>Documento</th><th>Tipo</th><th>Fecha</th><th class="n">Importe</th><th class="n">Sin aplicar</th><th>Aplicado a</th></tr></thead><tbody>`+
+      c.sinAplicar.map(d=>`<tr><td><strong>${esc(d.doc)}</strong></td><td>${esc(d.tipo)}</td><td>${fd(d.fecha)}</td><td class="n">${fmt(-d.imp)}</td><td class="n"><strong>${fmt(d.pend)}</strong></td><td class="small">${appsTxt(d)}</td></tr>`).join('')+`</tbody></table>`
+      : '<p>Todas las cobranzas tienen un comprobante para cancelar.</p>';
+  } else {
+    h+=`<table><thead><tr><th>Fecha</th><th>Documento</th><th>Tipo</th><th>Cuenta</th><th class="n">Debe</th><th class="n">Haber</th><th class="n">Pendiente</th><th>Aplicaciones</th></tr></thead><tbody>`+
+      c.docs.map(d=>`<tr><td>${fd(d.fecha)}</td><td><strong>${esc(d.doc)}</strong>${d.desc?`<div class="muted small">${esc(d.desc)}</div>`:''}</td><td>${esc(d.tipo)}${d.moneda==='DOLARES'?' <span class="tag t-info">USD</span>':''}</td><td>${esc(d.cuenta)}</td>
+      <td class="n">${d.imp>0?fmt(d.imp):''}</td><td class="n">${d.imp<0?fmt(-d.imp):''}</td>
+      <td class="n">${d.anulado?`<span class="tag t-info">anulado (${esc(d.anulado)})</span>`:d.pend>0?`<strong>${fmt(d.pend)}</strong>`:'<span class="tag t-ok">cancelado</span>'}</td><td class="small">${d.anulado?'':appsTxt(d)}</td></tr>`).join('')+`</tbody></table>`;
+  }
+  h+=`</div><details style="margin-top:12px"><summary>¿Cómo se calcula?</summary><p class="small muted">El export de Finnegans no trae las aplicaciones, así que se deducen. Primero se buscan cobranzas/compensaciones (hasta 4, entre 30 días antes y 90 días después) que sumen exactamente el importe de un comprobante: esas se marcan <span class="tag t-ok">exacto</span>. Lo que queda se aplica por antigüedad, cancelando primero lo más viejo: <span class="tag t-info">estimado</span>. Las facturas de compra y notas de débito de compra al mismo cliente cuentan como compensaciones. Las anulaciones se emparejan con el comprobante anulado y se excluyen.</p></details></div>`;
+  return h;
+}
+</script>
+</body>
+</html>
