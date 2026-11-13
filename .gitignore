@@ -1,0 +1,4 @@
+# Nunca subir exports ni datos de clientes
+*.xlsx
+*.xls
+*.csv
